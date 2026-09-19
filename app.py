@@ -2,6 +2,8 @@ import os
 import json
 import time
 import uuid
+import random
+import threading
 import unicodedata
 import urllib.request
 import urllib.error
@@ -28,7 +30,15 @@ GRAPH_API_VERSION = "v26.0"
 OPENAI_MODEL = "gpt-5.6-luna"
 
 TEMP_DIR = "/tmp/foto_express"
+
 MAX_REFERENCES = 10
+
+# Janela de silencio antes de responder.
+TEXT_DEBOUNCE_MIN = 3.5
+TEXT_DEBOUNCE_MAX = 5.5
+
+PHOTO_DEBOUNCE_MIN = 5.0
+PHOTO_DEBOUNCE_MAX = 7.0
 
 os.makedirs(TEMP_DIR, exist_ok=True)
 
@@ -39,18 +49,22 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 # MEMORIA TEMPORARIA
 # =========================================================
 
-conversations = defaultdict(lambda: deque(maxlen=24))
+conversations = defaultdict(
+    lambda: deque(maxlen=24)
+)
 
 customer_photos = defaultdict(list)
 
-orders = defaultdict(lambda: {
-    "status": "ATENDIMENTO",
-    "style": "",
-    "package": "",
-    "reference_count": 0,
-    "owner_notified": False,
-    "payment_receipt_received": False,
-})
+orders = defaultdict(
+    lambda: {
+        "status": "ATENDIMENTO",
+        "style": "",
+        "package": "",
+        "reference_count": 0,
+        "owner_notified": False,
+        "payment_receipt_received": False,
+    }
+)
 
 processed_messages = {}
 
@@ -58,79 +72,157 @@ MESSAGE_TTL = 60 * 60 * 24
 
 
 # =========================================================
-# AGENTE FOTO EXPRESS
+# BUFFER DE MENSAGENS
+# =========================================================
+
+pending_messages = defaultdict(list)
+pending_timers = {}
+
+buffer_lock = threading.Lock()
+
+
+# =========================================================
+# AGENTE
 # =========================================================
 
 AGENT_INSTRUCTIONS = """
 Voce e o atendente comercial da Foto Express no WhatsApp.
 
-Voce atende clientes brasileiros que querem transformar fotos
-comuns em ensaios fotograficos profissionais.
+Atenda em portugues brasileiro.
 
-Seja humano, simpatico, breve e comercial.
+Seu comportamento deve parecer uma conversa natural de
+WhatsApp: humano, simpatico, breve e comercial.
 
-Nunca diga que e uma inteligencia artificial.
+Nunca diga que e inteligencia artificial.
+
+Nao escreva como chatbot.
+
+Nao use textos excessivamente formais.
+
+Nao envie mensagens enormes.
+
+Normalmente responda em 1 a 4 frases.
+
+Use emojis com moderacao.
+
+Nao comece toda resposta com "Olá".
+
+Nao repita informacoes que o cliente ja recebeu.
+
+Nao repita perguntas que o cliente ja respondeu.
+
+Leia todo o contexto antes de responder.
 
 ==================================================
 SERVICO
 ==================================================
 
-O cliente envia uma ou varias fotos de referencia.
+A Foto Express transforma fotografias comuns em ensaios
+fotograficos profissionais.
 
-A Foto Express cria fotografias profissionais preservando
-a identidade da pessoa.
+O cliente pode enviar uma ou varias fotografias como
+referencia.
 
-O cliente pode enviar varias referencias.
+As fotografias servem para preservar a identidade e
+aparencia da pessoa.
 
-Quando receber uma foto, confirme o recebimento.
+O cliente ve uma previa antes de pagar.
 
-Se parecer que o cliente ainda vai enviar outras fotos,
-diga de forma breve que pode mandar as outras.
+Esse e um dos principais diferenciais do servico.
 
-Quando ele terminar de enviar as referencias, ele pode
-escrever "pronto" ou "terminei".
+==================================================
+VARIAS MENSAGENS
+==================================================
 
-Nunca diga que o ensaio esta pronto se o sistema nao
-informou isso.
+O sistema pode agrupar varias mensagens consecutivas do
+cliente antes de chamar voce.
+
+Exemplo:
+
+Oi
+queria saber como funciona
+vou mandar umas fotos
+
+Voce deve interpretar isso como uma unica sequencia de
+conversa.
+
+Nao responda separadamente a cada frase.
+
+==================================================
+VARIAS FOTOS
+==================================================
+
+O cliente pode mandar varias fotografias seguidas.
+
+Se o sistema informar que foram recebidas varias fotos,
+confirme o conjunto apenas uma vez.
+
+Nao diga:
+
+"foto recebida"
+"foto recebida"
+"foto recebida"
+
+Prefira algo natural como:
+
+"Recebi suas fotos 😊📸"
+
+Se o cliente ainda puder mandar mais referencias, diga
+brevemente que ele pode continuar enviando.
+
+Quando terminar, ele pode dizer "pronto", "terminei",
+"so essas", "pode fazer" ou algo equivalente.
 
 ==================================================
 PRECOS
 ==================================================
 
+Os precos oficiais sao:
+
 4 fotos = R$10
 10 fotos = R$20
 20 fotos = R$35
 
-O pacote principal e:
-
-10 fotos por R$20.
+O pacote principal e 10 fotos por R$20.
 
 Nao despeje todos os precos sem necessidade.
 
-Quando for apropriado, recomende 10 fotos por R$20.
+Quando chegar naturalmente o momento da venda,
+recomende primeiro:
 
-Se o cliente achar caro ou recusar o pacote de R$20:
+10 fotos por R$20.
+
+Explique que sao 10 fotos diferentes e que o cliente
+recebe as 10 em alta qualidade e sem marca d'agua.
+
+Se o cliente achar caro ou recusar R$20:
+
 ofereca 4 fotos por R$10.
 
-Se quiser mais fotos:
+Se quiser mais:
+
 ofereca 20 fotos por R$35.
 
-Se perguntar todos os precos:
+Se perguntar diretamente quais sao todos os precos,
 informe os tres.
 
-Nunca altere precos.
 Nunca invente desconto.
-Nunca prometa fotos extras.
+
+Nunca altere os precos.
 
 ==================================================
 PREVIA
 ==================================================
 
-O cliente ve uma previa antes de pagar.
+O cliente ve o resultado antes de pagar.
 
-Esse e um dos principais diferenciais da Foto Express.
+Use isso para reduzir inseguranca quando for relevante.
 
-Quando houver inseguranca, explique isso naturalmente.
+Nunca diga que a previa esta pronta se o sistema nao
+informou isso.
+
+Nunca diga que as fotos foram produzidas se o sistema
+nao informou isso.
 
 ==================================================
 PAGAMENTO
@@ -138,17 +230,17 @@ PAGAMENTO
 
 Nunca invente chave PIX.
 
-Nunca considere um print de comprovante como confirmacao
-definitiva de pagamento.
+Nunca trate um print ou arquivo de comprovante como
+confirmacao definitiva do pagamento.
 
-Se o sistema informar:
+Quando receber:
 
 [SISTEMA: COMPROVANTE RECEBIDO]
 
-diga que o comprovante foi recebido e que o pagamento
+diga de forma natural que recebeu e que o pagamento
 sera conferido.
 
-Somente considere o pagamento confirmado quando receber:
+Somente considere pago quando receber:
 
 [SISTEMA: PAGAMENTO CONFIRMADO PELO RESPONSAVEL]
 
@@ -160,39 +252,24 @@ Quando receber:
 
 [SISTEMA: REFERENCIAS FINALIZADAS]
 
-significa que o cliente terminou de mandar as referencias
-e o pedido foi encaminhado para producao.
+significa que as referencias foram encaminhadas para
+producao.
 
-Responda brevemente dizendo que o material foi recebido
-e sera preparado.
+Responda de forma breve e natural.
 
 Quando receber:
 
 [SISTEMA: PRODUCAO CONCLUIDA]
 
-significa que o responsavel terminou de produzir o ensaio.
+significa que o responsavel terminou a producao.
 
-Nao invente imagens, links ou anexos.
+Nao invente anexos, imagens ou links.
 
 ==================================================
-CONVERSA
+RESPOSTAS CURTAS
 ==================================================
 
-Use portugues brasileiro.
-
-Normalmente responda em 1 a 4 frases.
-
-Use poucos emojis.
-
-Nao reinicie a conversa.
-
-Nao repita saudacao em cada mensagem.
-
-Leia o historico.
-
-Se o cliente ja informou o estilo, nao pergunte novamente.
-
-Entenda respostas curtas pelo contexto, como:
+Entenda respostas curtas pelo contexto:
 
 sim
 quero
@@ -200,14 +277,43 @@ pode ser
 fechado
 10
 20
-essa
 essas
+essa
+pode fazer
+manda
+gostei
+
+Nao obrigue o cliente a escrever frases completas.
+
+==================================================
+TOM
+==================================================
+
+O atendimento deve transmitir:
+
+facilidade
+seguranca
+proximidade
+agilidade
+confianca
+
+Nao pressione excessivamente.
+
+Nao pareca um menu automatico.
+
+Nao diga coisas como:
+
+"Selecione uma opcao"
+"Digite 1"
+"Digite 2"
+
+a menos que o cliente realmente precise disso.
 
 ==================================================
 ESCALONAMENTO
 ==================================================
 
-Encaminhe para o responsavel quando houver:
+Encaminhe para o responsavel em caso de:
 
 reclamacao seria
 reembolso
@@ -222,8 +328,8 @@ Nao invente solucoes.
 REGRA PRINCIPAL
 ==================================================
 
-Responda ao que o cliente realmente disse considerando
-todo o historico.
+Responda ao que o cliente realmente quis dizer,
+considerando toda a sequencia da conversa.
 
 Nao use respostas fixas.
 
@@ -236,16 +342,21 @@ Nao invente acontecimentos.
 # =========================================================
 
 def mask_phone(phone):
+
     if not phone:
         return "desconhecido"
 
     if len(phone) <= 4:
         return "****"
 
-    return "*" * (len(phone) - 4) + phone[-4:]
+    return (
+        "*" * (len(phone) - 4)
+        + phone[-4:]
+    )
 
 
 def phone_suffix(phone):
+
     if not phone:
         return "????"
 
@@ -253,6 +364,7 @@ def phone_suffix(phone):
 
 
 def normalize_text(text):
+
     text = text.lower().strip()
 
     text = unicodedata.normalize(
@@ -270,6 +382,7 @@ def normalize_text(text):
 
 
 def cleanup_processed_messages():
+
     now = time.time()
 
     expired = [
@@ -280,10 +393,14 @@ def cleanup_processed_messages():
     ]
 
     for message_id in expired:
-        processed_messages.pop(message_id, None)
+        processed_messages.pop(
+            message_id,
+            None
+        )
 
 
 def already_processed(message_id):
+
     if not message_id:
         return False
 
@@ -298,11 +415,13 @@ def already_processed(message_id):
 
 
 def find_customer_by_suffix(suffix):
+
     suffix = suffix.strip()
 
     matches = []
 
     for customer in orders.keys():
+
         if customer.endswith(suffix):
             matches.append(customer)
 
@@ -316,7 +435,11 @@ def find_customer_by_suffix(suffix):
 # META GRAPH API
 # =========================================================
 
-def graph_request(path, method="GET", payload=None):
+def graph_request(
+    path,
+    method="GET",
+    payload=None
+):
 
     if not WHATSAPP_TOKEN:
         raise RuntimeError(
@@ -331,25 +454,35 @@ def graph_request(path, method="GET", payload=None):
     data = None
 
     if payload is not None:
-        data = json.dumps(payload).encode("utf-8")
+
+        data = json.dumps(
+            payload
+        ).encode("utf-8")
 
     req = urllib.request.Request(
         url=url,
         data=data,
         headers={
-            "Authorization": f"Bearer {WHATSAPP_TOKEN}",
-            "Content-Type": "application/json",
+            "Authorization":
+                f"Bearer {WHATSAPP_TOKEN}",
+            "Content-Type":
+                "application/json",
         },
         method=method,
     )
 
     try:
+
         with urllib.request.urlopen(
             req,
             timeout=30
         ) as response:
 
-            body = response.read().decode("utf-8")
+            body = (
+                response
+                .read()
+                .decode("utf-8")
+            )
 
             if not body:
                 return {}
@@ -358,9 +491,13 @@ def graph_request(path, method="GET", payload=None):
 
     except urllib.error.HTTPError as error:
 
-        body = error.read().decode(
-            "utf-8",
-            errors="replace"
+        body = (
+            error
+            .read()
+            .decode(
+                "utf-8",
+                errors="replace"
+            )
         )
 
         raise RuntimeError(
@@ -395,7 +532,9 @@ def send_whatsapp_message(to, text):
 def get_media_info(media_id):
 
     if not media_id:
-        raise RuntimeError("Media ID vazio")
+        raise RuntimeError(
+            "Media ID vazio"
+        )
 
     return graph_request(
         media_id,
@@ -425,7 +564,10 @@ def extension_from_mime(mime_type):
     )
 
 
-def download_media_file(media_url, destination):
+def download_media_file(
+    media_url,
+    destination
+):
 
     req = urllib.request.Request(
         url=media_url,
@@ -448,15 +590,25 @@ def download_media_file(media_url, destination):
             "Arquivo de imagem vazio"
         )
 
-    with open(destination, "wb") as file:
+    with open(
+        destination,
+        "wb"
+    ) as file:
+
         file.write(content)
 
     return len(content)
 
 
-def receive_customer_photo(sender, image_data):
+def receive_customer_photo(
+    sender,
+    image_data
+):
 
-    media_id = image_data.get("id", "")
+    media_id = image_data.get(
+        "id",
+        ""
+    )
 
     webhook_mime = image_data.get(
         "mime_type",
@@ -468,9 +620,14 @@ def receive_customer_photo(sender, image_data):
             "Imagem sem Media ID"
         )
 
-    media_info = get_media_info(media_id)
+    media_info = get_media_info(
+        media_id
+    )
 
-    media_url = media_info.get("url", "")
+    media_url = media_info.get(
+        "url",
+        ""
+    )
 
     mime_type = (
         media_info.get("mime_type")
@@ -515,20 +672,26 @@ def receive_customer_photo(sender, image_data):
         "received_at": time.time(),
     })
 
-    # Limite temporario.
     customer_photos[sender] = (
-        customer_photos[sender][-MAX_REFERENCES:]
+        customer_photos[sender]
+        [-MAX_REFERENCES:]
     )
 
-    orders[sender]["reference_count"] = len(
+    orders[sender][
+        "reference_count"
+    ] = len(
         customer_photos[sender]
     )
 
-    orders[sender]["status"] = "RECEBENDO_REFERENCIAS"
+    orders[sender][
+        "status"
+    ] = "RECEBENDO_REFERENCIAS"
 
     print(
-        f"FOTO BAIXADA | cliente={phone_suffix(sender)} "
-        f"| referencias={orders[sender]['reference_count']}",
+        "FOTO BAIXADA | "
+        f"cliente={phone_suffix(sender)} "
+        f"| referencias="
+        f"{orders[sender]['reference_count']}",
         flush=True,
     )
 
@@ -536,7 +699,7 @@ def receive_customer_photo(sender, image_data):
 
 
 # =========================================================
-# AGENTE OPENAI
+# OPENAI
 # =========================================================
 
 def build_conversation_input(
@@ -547,6 +710,7 @@ def build_conversation_input(
     result = []
 
     for item in conversations[sender]:
+
         result.append({
             "role": item["role"],
             "content": item["content"],
@@ -560,7 +724,10 @@ def build_conversation_input(
     return result
 
 
-def ask_agent(sender, customer_message):
+def ask_agent(
+    sender,
+    customer_message
+):
 
     response = client.responses.create(
         model=OPENAI_MODEL,
@@ -579,9 +746,10 @@ def ask_agent(sender, customer_message):
     ).strip()
 
     if not answer:
+
         answer = (
             "Recebi sua mensagem 😊 "
-            "Pode me explicar um pouquinho mais?"
+            "Pode me contar um pouquinho mais?"
         )
 
     conversations[sender].append({
@@ -597,7 +765,10 @@ def ask_agent(sender, customer_message):
     return answer
 
 
-def respond_with_agent(sender, customer_message):
+def respond_with_agent(
+    sender,
+    customer_message
+):
 
     try:
 
@@ -612,7 +783,7 @@ def respond_with_agent(sender, customer_message):
         )
 
         print(
-            f"AGENTE RESPONDEU | "
+            "AGENTE RESPONDEU | "
             f"cliente={phone_suffix(sender)}",
             flush=True,
         )
@@ -624,27 +795,33 @@ def respond_with_agent(sender, customer_message):
             flush=True,
         )
 
-        send_whatsapp_message(
-            sender,
-            (
-                "Tive um probleminha para processar "
-                "sua mensagem agora. 😊 "
-                "Pode tentar novamente em instantes?"
-            ),
-        )
+        try:
+
+            send_whatsapp_message(
+                sender,
+                (
+                    "Tive um probleminha por aqui. 😊 "
+                    "Pode me mandar novamente?"
+                ),
+            )
+
+        except Exception:
+            pass
 
 
 # =========================================================
-# AVISOS PARA O PROPRIETARIO
+# AVISOS AO PROPRIETARIO
 # =========================================================
 
 def notify_owner_ready(sender):
 
     if not OWNER_WHATSAPP:
+
         print(
             "OWNER_WHATSAPP nao configurado",
             flush=True,
         )
+
         return
 
     order = orders[sender]
@@ -654,8 +831,9 @@ def notify_owner_ready(sender):
     message = (
         "🔔 NOVO ENSAIO PARA PRODUÇÃO\n\n"
         f"Cliente: final {suffix}\n"
-        f"Referências: {order['reference_count']}\n"
-        f"Status: aguardando produção\n\n"
+        f"Referências: "
+        f"{order['reference_count']}\n"
+        "Status: aguardando produção\n\n"
         "Depois de produzir, envie:\n"
         f"/produzido {suffix}"
     )
@@ -668,7 +846,8 @@ def notify_owner_ready(sender):
     order["owner_notified"] = True
 
     print(
-        f"PROPRIETARIO AVISADO | cliente={suffix}",
+        "PROPRIETARIO AVISADO | "
+        f"cliente={suffix}",
         flush=True,
     )
 
@@ -699,22 +878,35 @@ def notify_owner_payment(sender):
 # COMANDOS DO PROPRIETARIO
 # =========================================================
 
-def handle_owner_command(sender, body):
+def handle_owner_command(
+    sender,
+    body
+):
 
     if sender != OWNER_WHATSAPP:
         return False
 
-    normalized = normalize_text(body)
+    normalized = normalize_text(
+        body
+    )
 
-    if normalized.startswith("/produzido"):
+    # -----------------------------------------------------
+    # PRODUZIDO
+    # -----------------------------------------------------
+
+    if normalized.startswith(
+        "/produzido"
+    ):
 
         parts = normalized.split()
 
         if len(parts) < 2:
+
             send_whatsapp_message(
                 sender,
                 "Use: /produzido 1234"
             )
+
             return True
 
         customer = find_customer_by_suffix(
@@ -722,13 +914,20 @@ def handle_owner_command(sender, body):
         )
 
         if not customer:
+
             send_whatsapp_message(
                 sender,
-                "Não encontrei um cliente único com esse final."
+                (
+                    "Não encontrei um cliente "
+                    "único com esse final."
+                )
             )
+
             return True
 
-        orders[customer]["status"] = "PRODUCAO_CONCLUIDA"
+        orders[customer][
+            "status"
+        ] = "PRODUCAO_CONCLUIDA"
 
         respond_with_agent(
             customer,
@@ -738,22 +937,31 @@ def handle_owner_command(sender, body):
         send_whatsapp_message(
             sender,
             (
-                "✅ Produção marcada como concluída "
-                f"para o cliente final {phone_suffix(customer)}."
+                "✅ Produção marcada como "
+                "concluída para o cliente "
+                f"final {phone_suffix(customer)}."
             ),
         )
 
         return True
 
-    if normalized.startswith("/pago"):
+    # -----------------------------------------------------
+    # PAGO
+    # -----------------------------------------------------
+
+    if normalized.startswith(
+        "/pago"
+    ):
 
         parts = normalized.split()
 
         if len(parts) < 2:
+
             send_whatsapp_message(
                 sender,
                 "Use: /pago 1234"
             )
+
             return True
 
         customer = find_customer_by_suffix(
@@ -761,41 +969,57 @@ def handle_owner_command(sender, body):
         )
 
         if not customer:
+
             send_whatsapp_message(
                 sender,
-                "Não encontrei um cliente único com esse final."
+                (
+                    "Não encontrei um cliente "
+                    "único com esse final."
+                )
             )
+
             return True
 
-        orders[customer]["status"] = "PAGO"
+        orders[customer][
+            "status"
+        ] = "PAGO"
 
         respond_with_agent(
             customer,
             (
-                "[SISTEMA: PAGAMENTO CONFIRMADO "
-                "PELO RESPONSAVEL]"
+                "[SISTEMA: PAGAMENTO "
+                "CONFIRMADO PELO RESPONSAVEL]"
             )
         )
 
         send_whatsapp_message(
             sender,
             (
-                "💰 Pagamento confirmado para "
-                f"o cliente final {phone_suffix(customer)}."
+                "💰 Pagamento confirmado "
+                "para o cliente final "
+                f"{phone_suffix(customer)}."
             ),
         )
 
         return True
 
-    if normalized.startswith("/status"):
+    # -----------------------------------------------------
+    # STATUS
+    # -----------------------------------------------------
+
+    if normalized.startswith(
+        "/status"
+    ):
 
         parts = normalized.split()
 
         if len(parts) < 2:
+
             send_whatsapp_message(
                 sender,
                 "Use: /status 1234"
             )
+
             return True
 
         customer = find_customer_by_suffix(
@@ -803,10 +1027,12 @@ def handle_owner_command(sender, body):
         )
 
         if not customer:
+
             send_whatsapp_message(
                 sender,
                 "Cliente não encontrado."
             )
+
             return True
 
         order = orders[customer]
@@ -815,8 +1041,10 @@ def handle_owner_command(sender, body):
             sender,
             (
                 "📋 PEDIDO\n\n"
-                f"Cliente: final {phone_suffix(customer)}\n"
-                f"Referências: {order['reference_count']}\n"
+                "Cliente: final "
+                f"{phone_suffix(customer)}\n"
+                "Referências: "
+                f"{order['reference_count']}\n"
                 f"Status: {order['status']}"
             ),
         )
@@ -827,12 +1055,14 @@ def handle_owner_command(sender, body):
 
 
 # =========================================================
-# FINALIZACAO DAS REFERENCIAS
+# REFERENCIAS FINALIZADAS
 # =========================================================
 
 def customer_finished_references(text):
 
-    normalized = normalize_text(text)
+    normalized = normalize_text(
+        text
+    )
 
     expressions = {
         "pronto",
@@ -843,19 +1073,28 @@ def customer_finished_references(text):
         "essas sao as fotos",
         "pode fazer",
         "pode comecar",
+        "pode fazer essas",
+        "so essas mesmo",
     }
 
-    return normalized in expressions
+    if normalized in expressions:
+        return True
+
+    return False
 
 
 def finish_references(sender):
 
-    count = orders[sender]["reference_count"]
+    count = orders[sender][
+        "reference_count"
+    ]
 
     if count <= 0:
         return False
 
-    orders[sender]["status"] = "AGUARDANDO_PRODUCAO"
+    orders[sender][
+        "status"
+    ] = "AGUARDANDO_PRODUCAO"
 
     respond_with_agent(
         sender,
@@ -867,34 +1106,274 @@ def finish_references(sender):
         )
     )
 
-    if not orders[sender]["owner_notified"]:
-        notify_owner_ready(sender)
+    if not orders[sender][
+        "owner_notified"
+    ]:
+
+        notify_owner_ready(
+            sender
+        )
 
     return True
+
+
+# =========================================================
+# BUFFER / DEBOUNCE
+# =========================================================
+
+def schedule_customer_processing(
+    sender,
+    delay_type="text"
+):
+
+    with buffer_lock:
+
+        old_timer = pending_timers.get(
+            sender
+        )
+
+        if old_timer:
+
+            try:
+                old_timer.cancel()
+            except Exception:
+                pass
+
+        if delay_type == "photo":
+
+            delay = random.uniform(
+                PHOTO_DEBOUNCE_MIN,
+                PHOTO_DEBOUNCE_MAX
+            )
+
+        else:
+
+            delay = random.uniform(
+                TEXT_DEBOUNCE_MIN,
+                TEXT_DEBOUNCE_MAX
+            )
+
+        timer = threading.Timer(
+            delay,
+            process_customer_buffer,
+            args=(sender,)
+        )
+
+        timer.daemon = True
+
+        pending_timers[sender] = timer
+
+        timer.start()
+
+        print(
+            "AGUARDANDO SEQUENCIA | "
+            f"cliente={phone_suffix(sender)} "
+            f"| janela={delay:.1f}s",
+            flush=True,
+        )
+
+
+def add_to_customer_buffer(
+    sender,
+    item,
+    delay_type="text"
+):
+
+    with buffer_lock:
+
+        pending_messages[sender].append(
+            item
+        )
+
+    schedule_customer_processing(
+        sender,
+        delay_type
+    )
+
+
+def process_customer_buffer(sender):
+
+    with buffer_lock:
+
+        items = pending_messages.pop(
+            sender,
+            []
+        )
+
+        pending_timers.pop(
+            sender,
+            None
+        )
+
+    if not items:
+        return
+
+    try:
+
+        text_parts = []
+        photo_count = 0
+        captions = []
+
+        for item in items:
+
+            item_type = item.get(
+                "type"
+            )
+
+            if item_type == "text":
+
+                text = item.get(
+                    "text",
+                    ""
+                ).strip()
+
+                if text:
+                    text_parts.append(text)
+
+            elif item_type == "photo":
+
+                photo_count += 1
+
+                caption = item.get(
+                    "caption",
+                    ""
+                ).strip()
+
+                if caption:
+                    captions.append(
+                        caption
+                    )
+
+        # -------------------------------------------------
+        # VERIFICA SE CLIENTE FINALIZOU REFERENCIAS
+        # -------------------------------------------------
+
+        for text in text_parts:
+
+            if customer_finished_references(
+                text
+            ):
+
+                if finish_references(
+                    sender
+                ):
+                    return
+
+        # -------------------------------------------------
+        # CONSTROI UMA UNICA MENSAGEM PARA A IA
+        # -------------------------------------------------
+
+        context_parts = []
+
+        if photo_count > 0:
+
+            total = orders[sender][
+                "reference_count"
+            ]
+
+            context_parts.append(
+                (
+                    "[SISTEMA: O cliente acabou "
+                    f"de enviar {photo_count} "
+                    "nova(s) fotografia(s) de "
+                    "referencia nesta sequencia. "
+                    f"Ha {total} fotografia(s) "
+                    "de referencia armazenada(s) "
+                    "no pedido.]"
+                )
+            )
+
+        if captions:
+
+            context_parts.append(
+                "Legendas das fotografias: "
+                + " | ".join(captions)
+            )
+
+        if text_parts:
+
+            context_parts.append(
+                "Mensagens enviadas pelo cliente "
+                "em sequencia:\n"
+                + "\n".join(
+                    f"- {text}"
+                    for text in text_parts
+                )
+            )
+
+        combined_message = "\n\n".join(
+            context_parts
+        )
+
+        if not combined_message:
+            return
+
+        print(
+            "PROCESSANDO SEQUENCIA | "
+            f"cliente={phone_suffix(sender)} "
+            f"| textos={len(text_parts)} "
+            f"| fotos={photo_count}",
+            flush=True,
+        )
+
+        respond_with_agent(
+            sender,
+            combined_message
+        )
+
+    except Exception as error:
+
+        print(
+            "ERRO BUFFER | "
+            f"cliente={phone_suffix(sender)} "
+            f"| {type(error).__name__}: "
+            f"{error}",
+            flush=True,
+        )
 
 
 # =========================================================
 # ROTAS
 # =========================================================
 
-@app.route("/", methods=["GET"])
+@app.route(
+    "/",
+    methods=["GET"]
+)
 def home():
-    return "Foto Express Hybrid Agent online", 200
+
+    return (
+        "Foto Express Hybrid Agent online",
+        200
+    )
 
 
-@app.route("/status", methods=["GET"])
+@app.route(
+    "/status",
+    methods=["GET"]
+)
 def status():
 
     return jsonify({
         "online": True,
-        "openai": bool(OPENAI_API_KEY),
-        "whatsapp": bool(WHATSAPP_TOKEN),
-        "owner": bool(OWNER_WHATSAPP),
+        "openai": bool(
+            OPENAI_API_KEY
+        ),
+        "whatsapp": bool(
+            WHATSAPP_TOKEN
+        ),
+        "owner": bool(
+            OWNER_WHATSAPP
+        ),
         "model": OPENAI_MODEL,
+        "debounce": True,
     }), 200
 
 
-@app.route("/privacy", methods=["GET"])
+@app.route(
+    "/privacy",
+    methods=["GET"]
+)
 def privacy():
 
     return """
@@ -904,19 +1383,28 @@ def privacy():
         <meta charset="utf-8">
         <title>Privacidade - Foto Express</title>
     </head>
-    <body style="font-family:Arial;max-width:800px;margin:40px auto;padding:20px;line-height:1.6">
+    <body style="
+        font-family:Arial;
+        max-width:800px;
+        margin:40px auto;
+        padding:20px;
+        line-height:1.6
+    ">
         <h1>Política de Privacidade - Foto Express</h1>
+
         <p>
         A Foto Express utiliza mensagens e fotografias
-        enviadas voluntariamente pelos clientes para prestar
-        os serviços solicitados.
+        enviadas voluntariamente pelos clientes para
+        prestar os serviços solicitados.
         </p>
+
         <p>
-        As informações podem ser processadas por provedores
-        tecnológicos necessários à operação, incluindo
-        mensageria, hospedagem, automação e inteligência
-        artificial.
+        As informações podem ser processadas por
+        provedores tecnológicos necessários à operação,
+        incluindo mensageria, hospedagem, automação e
+        inteligência artificial.
         </p>
+
         <p>
         A Foto Express não vende fotografias ou dados
         pessoais dos clientes.
@@ -926,7 +1414,10 @@ def privacy():
     """, 200
 
 
-@app.route("/data-deletion", methods=["GET"])
+@app.route(
+    "/data-deletion",
+    methods=["GET"]
+)
 def data_deletion():
 
     return """
@@ -936,12 +1427,19 @@ def data_deletion():
         <meta charset="utf-8">
         <title>Exclusão de Dados - Foto Express</title>
     </head>
-    <body style="font-family:Arial;max-width:800px;margin:40px auto;padding:20px;line-height:1.6">
+    <body style="
+        font-family:Arial;
+        max-width:800px;
+        margin:40px auto;
+        padding:20px;
+        line-height:1.6
+    ">
         <h1>Exclusão de Dados</h1>
+
         <p>
-        O cliente pode solicitar a exclusão das informações
-        e fotografias fornecidas através do canal oficial
-        de atendimento da Foto Express.
+        O cliente pode solicitar a exclusão das
+        informações e fotografias fornecidas através
+        do canal oficial de atendimento da Foto Express.
         </p>
     </body>
     </html>
@@ -949,21 +1447,33 @@ def data_deletion():
 
 
 # =========================================================
-# VERIFICACAO DO WEBHOOK
+# VERIFICACAO WEBHOOK
 # =========================================================
 
-@app.route("/webhook", methods=["GET"])
+@app.route(
+    "/webhook",
+    methods=["GET"]
+)
 def verify_webhook():
 
-    mode = request.args.get("hub.mode")
-    token = request.args.get("hub.verify_token")
-    challenge = request.args.get("hub.challenge")
+    mode = request.args.get(
+        "hub.mode"
+    )
+
+    token = request.args.get(
+        "hub.verify_token"
+    )
+
+    challenge = request.args.get(
+        "hub.challenge"
+    )
 
     if (
         mode == "subscribe"
         and token == VERIFY_TOKEN
         and challenge
     ):
+
         return challenge, 200
 
     return "Forbidden", 403
@@ -973,37 +1483,73 @@ def verify_webhook():
 # WEBHOOK PRINCIPAL
 # =========================================================
 
-@app.route("/webhook", methods=["POST"])
+@app.route(
+    "/webhook",
+    methods=["POST"]
+)
 def receive_webhook():
 
-    data = request.get_json(silent=True) or {}
+    data = (
+        request.get_json(
+            silent=True
+        )
+        or {}
+    )
 
     try:
 
-        for entry in data.get("entry", []):
+        for entry in data.get(
+            "entry",
+            []
+        ):
 
-            for change in entry.get("changes", []):
+            for change in entry.get(
+                "changes",
+                []
+            ):
 
-                value = change.get("value", {})
+                value = change.get(
+                    "value",
+                    {}
+                )
 
-                for message in value.get("messages", []):
+                for message in value.get(
+                    "messages",
+                    []
+                ):
 
-                    sender = message.get("from", "")
-                    message_id = message.get("id", "")
-                    message_type = message.get("type", "")
+                    sender = message.get(
+                        "from",
+                        ""
+                    )
+
+                    message_id = message.get(
+                        "id",
+                        ""
+                    )
+
+                    message_type = message.get(
+                        "type",
+                        ""
+                    )
 
                     if not sender:
                         continue
 
-                    if already_processed(message_id):
+                    if already_processed(
+                        message_id
+                    ):
+
                         print(
                             "Webhook duplicado ignorado.",
                             flush=True,
                         )
+
                         continue
 
                     print(
-                        f"MENSAGEM | cliente={phone_suffix(sender)} "
+                        "MENSAGEM | "
+                        f"cliente={phone_suffix(sender)} "
                         f"| tipo={message_type}",
                         flush=True,
                     )
@@ -1024,24 +1570,21 @@ def receive_webhook():
                         if not body:
                             continue
 
-                        # Comandos administrativos possuem
-                        # prioridade.
+                        # Comandos do dono sao imediatos.
                         if handle_owner_command(
                             sender,
                             body
                         ):
                             continue
 
-                        # Cliente terminou de enviar fotos.
-                        if customer_finished_references(
-                            body
-                        ):
-                            if finish_references(sender):
-                                continue
-
-                        respond_with_agent(
+                        # Mensagem normal entra no buffer.
+                        add_to_customer_buffer(
                             sender,
-                            body
+                            {
+                                "type": "text",
+                                "text": body,
+                            },
+                            delay_type="text",
                         )
 
                     # =====================================
@@ -1068,52 +1611,34 @@ def receive_webhook():
                                 image_data
                             )
 
-                            count = orders[
-                                sender
-                            ]["reference_count"]
-
-                            system_message = (
-                                "[SISTEMA: NOVA FOTO DE "
-                                "REFERENCIA RECEBIDA E "
-                                "ARMAZENADA. "
-                                f"Agora existem {count} "
-                                "referencia(s) neste pedido. "
-                                "O cliente pode enviar outras "
-                                "fotografias se desejar."
-                            )
-
-                            if caption:
-                                system_message += (
-                                    " Legenda enviada pelo "
-                                    f"cliente: {caption}"
-                                )
-
-                            system_message += "]"
-
-                            respond_with_agent(
+                            add_to_customer_buffer(
                                 sender,
-                                system_message
+                                {
+                                    "type": "photo",
+                                    "caption": caption,
+                                },
+                                delay_type="photo",
                             )
 
                         except Exception as error:
 
                             print(
-                                f"ERRO FOTO: {error}",
+                                "ERRO FOTO: "
+                                f"{error}",
                                 flush=True,
                             )
 
                             send_whatsapp_message(
                                 sender,
                                 (
-                                    "Recebi a foto, mas tive "
-                                    "um problema para processar "
-                                    "o arquivo. 📸 Pode enviá-la "
-                                    "novamente?"
+                                    "Tive um problema para "
+                                    "receber essa foto. 📸 "
+                                    "Pode enviá-la novamente?"
                                 ),
                             )
 
                     # =====================================
-                    # DOCUMENTO / COMPROVANTE
+                    # DOCUMENTO
                     # =====================================
 
                     elif message_type == "document":
@@ -1124,14 +1649,42 @@ def receive_webhook():
 
                         orders[sender][
                             "status"
-                        ] = "AGUARDANDO_CONFIRMACAO_PIX"
+                        ] = (
+                            "AGUARDANDO_CONFIRMACAO_PIX"
+                        )
 
                         respond_with_agent(
                             sender,
-                            "[SISTEMA: COMPROVANTE RECEBIDO]"
+                            (
+                                "[SISTEMA: "
+                                "COMPROVANTE RECEBIDO]"
+                            )
                         )
 
-                        notify_owner_payment(sender)
+                        notify_owner_payment(
+                            sender
+                        )
+
+                    # =====================================
+                    # AUDIO
+                    # =====================================
+
+                    elif message_type == "audio":
+
+                        add_to_customer_buffer(
+                            sender,
+                            {
+                                "type": "text",
+                                "text": (
+                                    "[SISTEMA: O cliente "
+                                    "enviou um audio. "
+                                    "Neste momento o conteudo "
+                                    "do audio nao foi "
+                                    "transcrito.]"
+                                ),
+                            },
+                            delay_type="text",
+                        )
 
                     # =====================================
                     # OUTROS
@@ -1139,23 +1692,31 @@ def receive_webhook():
 
                     else:
 
-                        respond_with_agent(
+                        add_to_customer_buffer(
                             sender,
-                            (
-                                "[SISTEMA: O cliente enviou "
-                                f"uma mensagem do tipo "
-                                f"{message_type}.]"
-                            )
+                            {
+                                "type": "text",
+                                "text": (
+                                    "[SISTEMA: O cliente "
+                                    "enviou uma mensagem "
+                                    f"do tipo {message_type}.]"
+                                ),
+                            },
+                            delay_type="text",
                         )
 
     except Exception as error:
 
         print(
-            f"ERRO WEBHOOK: "
-            f"{type(error).__name__}: {error}",
+            "ERRO WEBHOOK: "
+            f"{type(error).__name__}: "
+            f"{error}",
             flush=True,
         )
 
+    # IMPORTANTE:
+    # Meta recebe 200 imediatamente.
+    # Nao esperamos o agente responder.
     return "EVENT_RECEIVED", 200
 
 
