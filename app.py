@@ -303,7 +303,35 @@ def check_subscription():
             "error": str(error)
         }), 500
 
+# =========================================================
+# ASSINAR O APP NA WABA - USO TEMPORARIO
+# =========================================================
 
+@app.route("/subscribe-waba", methods=["GET"])
+def subscribe_waba():
+
+    if not WABA_ID or not WHATSAPP_TOKEN:
+        return jsonify({
+            "ok": False,
+            "error": "WABA_ID ou WHATSAPP_TOKEN ausente"
+        }), 500
+
+    try:
+        result = graph_request(
+            f"{WABA_ID}/subscribed_apps",
+            method="POST"
+        )
+
+        return jsonify({
+            "ok": True,
+            "resultado": result
+        }), 200
+
+    except Exception as error:
+        return jsonify({
+            "ok": False,
+            "error": str(error)
+        }), 500
 # =========================================================
 # WEBHOOK - VERIFICAÇÃO DA META
 # =========================================================
