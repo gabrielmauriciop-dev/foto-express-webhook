@@ -5,6 +5,7 @@ import urllib.error
 
 from flask import Flask, request, jsonify
 
+
 app = Flask(__name__)
 
 
@@ -21,7 +22,7 @@ GRAPH_API_VERSION = "v26.0"
 
 
 # =========================================================
-# FUNÇÃO PARA CHAMAR A GRAPH API
+# GRAPH API
 # =========================================================
 
 def graph_request(path, method="GET", payload=None):
@@ -39,7 +40,7 @@ def graph_request(path, method="GET", payload=None):
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
 
-    request_api = urllib.request.Request(
+    req = urllib.request.Request(
         url=url,
         data=data,
         headers={
@@ -52,7 +53,7 @@ def graph_request(path, method="GET", payload=None):
     try:
 
         with urllib.request.urlopen(
-            request_api,
+            req,
             timeout=20
         ) as response:
 
@@ -73,11 +74,45 @@ def graph_request(path, method="GET", payload=None):
         try:
             details = json.loads(body)
         except Exception:
-            details = {"message": body}
+            details = {
+                "message": body
+            }
 
         raise RuntimeError(
-            json.dumps(details, ensure_ascii=False)
+            json.dumps(
+                details,
+                ensure_ascii=False
+            )
         )
+
+
+# =========================================================
+# ENVIAR MENSAGEM PELO WHATSAPP
+# =========================================================
+
+def send_whatsapp_message(to, text):
+
+    if not PHONE_NUMBER_ID:
+        raise RuntimeError(
+            "PHONE_NUMBER_ID nao configurado"
+        )
+
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to,
+        "type": "text",
+        "text": {
+            "preview_url": False,
+            "body": text
+        }
+    }
+
+    return graph_request(
+        f"{PHONE_NUMBER_ID}/messages",
+        method="POST",
+        payload=payload
+    )
 
 
 # =========================================================
@@ -118,11 +153,18 @@ def privacy():
     <html lang="pt-BR">
 
     <head>
-        <meta charset="UTF-8">
-        <meta name="viewport"
-              content="width=device-width, initial-scale=1.0">
 
-        <title>Política de Privacidade - Foto Express</title>
+        <meta charset="UTF-8">
+
+        <meta
+            name="viewport"
+            content="width=device-width, initial-scale=1.0"
+        >
+
+        <title>
+            Política de Privacidade - Foto Express
+        </title>
+
     </head>
 
     <body style="
@@ -133,85 +175,106 @@ def privacy():
         line-height: 1.6;
     ">
 
-        <h1>Política de Privacidade - Foto Express</h1>
+        <h1>
+            Política de Privacidade - Foto Express
+        </h1>
 
         <p>
             <strong>
-                Última atualização: 19 de setembro de 2026.
+                Última atualização:
+                19 de setembro de 2026.
             </strong>
         </p>
 
         <p>
-            A Foto Express utiliza o WhatsApp para receber
-            mensagens, fotografias e instruções enviadas
-            voluntariamente pelos clientes para prestação
-            de serviços de criação, edição e transformação
-            de imagens.
+            A Foto Express utiliza o WhatsApp para
+            receber mensagens, fotografias e instruções
+            enviadas voluntariamente pelos clientes
+            para prestação de serviços de criação,
+            edição e transformação de imagens.
         </p>
 
-        <h2>1. Dados que podemos receber</h2>
+        <h2>
+            1. Dados que podemos receber
+        </h2>
 
         <p>
-            Podemos receber informações fornecidas pelo
-            próprio cliente, incluindo mensagens, número
-            associado ao WhatsApp, fotografias, imagens
-            e instruções relacionadas ao serviço solicitado.
+            Podemos receber informações fornecidas
+            pelo próprio cliente, incluindo mensagens,
+            número associado ao WhatsApp, fotografias,
+            imagens e instruções relacionadas ao
+            serviço solicitado.
         </p>
 
-        <h2>2. Como utilizamos os dados</h2>
+        <h2>
+            2. Como utilizamos os dados
+        </h2>
 
         <p>
-            Os dados são utilizados para atender o cliente,
-            processar solicitações, produzir e entregar
-            imagens, prestar suporte e operar o serviço
-            Foto Express.
+            Os dados são utilizados para atender
+            o cliente, processar solicitações,
+            produzir e entregar imagens, prestar
+            suporte e operar o serviço Foto Express.
         </p>
 
-        <h2>3. Fotografias</h2>
+        <h2>
+            3. Fotografias
+        </h2>
 
         <p>
-            As fotografias enviadas pelos clientes são
-            utilizadas para executar o serviço solicitado.
-            A Foto Express não vende fotografias ou dados
-            pessoais dos clientes.
+            As fotografias enviadas pelos clientes
+            são utilizadas para executar o serviço
+            solicitado. A Foto Express não vende
+            fotografias ou dados pessoais dos clientes.
         </p>
 
-        <h2>4. Compartilhamento e processamento</h2>
+        <h2>
+            4. Compartilhamento e processamento
+        </h2>
 
         <p>
             Quando necessário para executar o serviço,
-            informações podem ser processadas por provedores
-            tecnológicos utilizados na operação, incluindo
-            serviços de hospedagem, mensageria, automação
-            e processamento de imagens.
+            informações podem ser processadas por
+            provedores tecnológicos utilizados na
+            operação, incluindo serviços de hospedagem,
+            mensageria, automação e processamento
+            de imagens.
         </p>
 
-        <h2>5. Segurança</h2>
+        <h2>
+            5. Segurança
+        </h2>
 
         <p>
-            A Foto Express adota medidas razoáveis para
-            proteger as informações utilizadas durante
-            a prestação do serviço.
+            A Foto Express adota medidas razoáveis
+            para proteger as informações utilizadas
+            durante a prestação do serviço.
         </p>
 
-        <h2>6. Exclusão de dados</h2>
+        <h2>
+            6. Exclusão de dados
+        </h2>
 
         <p>
-            O cliente pode solicitar a exclusão de seus dados
-            entrando em contato com a Foto Express através
-            do canal oficial de atendimento no WhatsApp.
+            O cliente pode solicitar a exclusão
+            de seus dados entrando em contato com
+            a Foto Express através do canal oficial
+            de atendimento no WhatsApp.
         </p>
 
-        <h2>7. Contato</h2>
+        <h2>
+            7. Contato
+        </h2>
 
         <p>
-            Para dúvidas relacionadas à privacidade ou
-            solicitações referentes aos seus dados,
+            Para dúvidas relacionadas à privacidade
+            ou solicitações referentes aos seus dados,
             entre em contato com a Foto Express através
             do canal oficial de atendimento.
         </p>
 
     </body>
+
     </html>
     """, 200
 
@@ -228,11 +291,18 @@ def data_deletion():
     <html lang="pt-BR">
 
     <head>
-        <meta charset="UTF-8">
-        <meta name="viewport"
-              content="width=device-width, initial-scale=1.0">
 
-        <title>Exclusão de Dados - Foto Express</title>
+        <meta charset="UTF-8">
+
+        <meta
+            name="viewport"
+            content="width=device-width, initial-scale=1.0"
+        >
+
+        <title>
+            Exclusão de Dados - Foto Express
+        </title>
+
     </head>
 
     <body style="
@@ -243,19 +313,22 @@ def data_deletion():
         line-height: 1.6;
     ">
 
-        <h1>Solicitação de Exclusão de Dados</h1>
+        <h1>
+            Solicitação de Exclusão de Dados
+        </h1>
 
         <p>
-            Os clientes da Foto Express podem solicitar
-            a exclusão de informações e fotografias
-            fornecidas durante o atendimento.
+            Os clientes da Foto Express podem
+            solicitar a exclusão de informações
+            e fotografias fornecidas durante
+            o atendimento.
         </p>
 
         <p>
-            Para solicitar a exclusão, entre em contato
-            através do canal oficial de atendimento da
-            Foto Express no WhatsApp e informe que deseja
-            excluir seus dados.
+            Para solicitar a exclusão, entre em
+            contato através do canal oficial de
+            atendimento da Foto Express no WhatsApp
+            e informe que deseja excluir seus dados.
         </p>
 
         <p>
@@ -265,6 +338,7 @@ def data_deletion():
         </p>
 
     </body>
+
     </html>
     """, 200
 
@@ -273,16 +347,21 @@ def data_deletion():
 # CONSULTAR ASSINATURA DA WABA
 # =========================================================
 
-@app.route("/check-subscription", methods=["GET"])
+@app.route(
+    "/check-subscription",
+    methods=["GET"]
+)
 def check_subscription():
 
     if not WABA_ID:
+
         return jsonify({
             "ok": False,
             "error": "WABA_ID nao configurado"
         }), 500
 
     if not WHATSAPP_TOKEN:
+
         return jsonify({
             "ok": False,
             "error": "WHATSAPP_TOKEN nao configurado"
@@ -309,55 +388,26 @@ def check_subscription():
 
 
 # =========================================================
-# ASSINAR O APP NA WABA
-# ROTA TEMPORÁRIA DE CONFIGURAÇÃO
-# =========================================================
-
-@app.route("/subscribe-waba", methods=["GET"])
-def subscribe_waba():
-
-    if not WABA_ID:
-        return jsonify({
-            "ok": False,
-            "error": "WABA_ID nao configurado"
-        }), 500
-
-    if not WHATSAPP_TOKEN:
-        return jsonify({
-            "ok": False,
-            "error": "WHATSAPP_TOKEN nao configurado"
-        }), 500
-
-    try:
-
-        result = graph_request(
-            f"{WABA_ID}/subscribed_apps",
-            method="POST"
-        )
-
-        return jsonify({
-            "ok": True,
-            "resultado": result
-        }), 200
-
-    except Exception as error:
-
-        return jsonify({
-            "ok": False,
-            "error": str(error)
-        }), 500
-
-
-# =========================================================
 # WEBHOOK - VERIFICAÇÃO DA META
 # =========================================================
 
-@app.route("/webhook", methods=["GET"])
+@app.route(
+    "/webhook",
+    methods=["GET"]
+)
 def verify_webhook():
 
-    mode = request.args.get("hub.mode")
-    token = request.args.get("hub.verify_token")
-    challenge = request.args.get("hub.challenge")
+    mode = request.args.get(
+        "hub.mode"
+    )
+
+    token = request.args.get(
+        "hub.verify_token"
+    )
+
+    challenge = request.args.get(
+        "hub.challenge"
+    )
 
     if (
         mode == "subscribe"
@@ -384,12 +434,17 @@ def verify_webhook():
 # WEBHOOK - RECEBER EVENTOS
 # =========================================================
 
-@app.route("/webhook", methods=["POST"])
+@app.route(
+    "/webhook",
+    methods=["POST"]
+)
 def receive_webhook():
 
     try:
 
-        data = request.get_json(silent=True) or {}
+        data = request.get_json(
+            silent=True
+        ) or {}
 
         print(
             "\n====================================",
@@ -406,36 +461,63 @@ def receive_webhook():
             flush=True
         )
 
-        entries = data.get("entry", [])
+        entries = data.get(
+            "entry",
+            []
+        )
 
         for entry in entries:
 
-            changes = entry.get("changes", [])
+            changes = entry.get(
+                "changes",
+                []
+            )
 
             for change in changes:
 
-                field = change.get("field", "")
-                value = change.get("value", {})
+                field = change.get(
+                    "field",
+                    ""
+                )
+
+                value = change.get(
+                    "value",
+                    {}
+                )
 
                 print(
                     f"Campo: {field}",
                     flush=True
                 )
 
-                # =========================================
-                # MENSAGENS
-                # =========================================
+                messages = value.get(
+                    "messages",
+                    []
+                )
 
-                messages = value.get("messages", [])
+                # =========================================
+                # MENSAGENS RECEBIDAS
+                # =========================================
 
                 for message in messages:
 
-                    sender = message.get("from", "")
-                    message_id = message.get("id", "")
-                    message_type = message.get("type", "")
+                    sender = message.get(
+                        "from",
+                        ""
+                    )
+
+                    message_id = message.get(
+                        "id",
+                        ""
+                    )
+
+                    message_type = message.get(
+                        "type",
+                        ""
+                    )
 
                     print(
-                        f"Remetente: {sender}",
+                        f"Remetente recebido",
                         flush=True
                     )
 
@@ -449,9 +531,9 @@ def receive_webhook():
                         flush=True
                     )
 
-                    # -------------------------------------
+                    # =====================================
                     # TEXTO
-                    # -------------------------------------
+                    # =====================================
 
                     if message_type == "text":
 
@@ -470,9 +552,50 @@ def receive_webhook():
                             flush=True
                         )
 
-                    # -------------------------------------
+                        resposta = (
+                            "Olá! 😊 É bem simples: "
+                            "você me envia 1 foto sua e "
+                            "eu transformo em uma foto "
+                            "profissional.\n\n"
+
+                            "Você vê o resultado antes "
+                            "de pagar. Se gostar, escolhe "
+                            "quantas fotos deseja.\n\n"
+
+                            "📸 Pode me mandar uma foto "
+                            "sua aqui agora."
+                        )
+
+                        try:
+
+                            resultado_envio = (
+                                send_whatsapp_message(
+                                    sender,
+                                    resposta
+                                )
+                            )
+
+                            print(
+                                "RESPOSTA AUTOMATICA ENVIADA",
+                                flush=True
+                            )
+
+                            print(
+                                "Meta confirmou o envio.",
+                                flush=True
+                            )
+
+                        except Exception as error:
+
+                            print(
+                                "ERRO AO ENVIAR RESPOSTA: "
+                                f"{error}",
+                                flush=True
+                            )
+
+                    # =====================================
                     # IMAGEM
-                    # -------------------------------------
+                    # =====================================
 
                     elif message_type == "image":
 
@@ -497,7 +620,8 @@ def receive_webhook():
                         )
 
                         print(
-                            f"Media ID: {media_id}",
+                            f"Media ID recebido: "
+                            f"{bool(media_id)}",
                             flush=True
                         )
 
@@ -511,33 +635,66 @@ def receive_webhook():
                             flush=True
                         )
 
-                    # -------------------------------------
+                        resposta_foto = (
+                            "Foto recebida! ✅📸\n\n"
+                            "Vou preparar seu ensaio agora. "
+                            "Em alguns minutinhos te mostro "
+                            "como ficou. 🎨"
+                        )
+
+                        try:
+
+                            send_whatsapp_message(
+                                sender,
+                                resposta_foto
+                            )
+
+                            print(
+                                "CONFIRMACAO DA FOTO ENVIADA",
+                                flush=True
+                            )
+
+                        except Exception as error:
+
+                            print(
+                                "ERRO AO RESPONDER FOTO: "
+                                f"{error}",
+                                flush=True
+                            )
+
+                    # =====================================
                     # OUTROS TIPOS
-                    # -------------------------------------
+                    # =====================================
 
                     else:
 
                         print(
-                            f"Tipo ainda nao tratado: "
+                            "Tipo ainda nao tratado: "
                             f"{message_type}",
                             flush=True
                         )
 
                 # =========================================
-                # STATUS DE MENSAGENS
+                # STATUS DAS MENSAGENS ENVIADAS
                 # =========================================
 
-                statuses = value.get("statuses", [])
+                statuses = value.get(
+                    "statuses",
+                    []
+                )
 
                 for status_item in statuses:
 
-                    status_name = status_item.get(
-                        "status",
-                        ""
+                    status_name = (
+                        status_item.get(
+                            "status",
+                            ""
+                        )
                     )
 
                     print(
-                        f"Status WhatsApp: {status_name}",
+                        "Status WhatsApp: "
+                        f"{status_name}",
                         flush=True
                     )
 
@@ -549,11 +706,12 @@ def receive_webhook():
     except Exception as error:
 
         print(
-            f"ERRO AO PROCESSAR WEBHOOK: {error}",
+            "ERRO AO PROCESSAR WEBHOOK: "
+            f"{error}",
             flush=True
         )
 
-    # Meta precisa receber HTTP 200 rapidamente.
+    # A Meta precisa receber HTTP 200 rapidamente.
     return "EVENT_RECEIVED", 200
 
 
