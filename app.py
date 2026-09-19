@@ -5,7 +5,6 @@ import urllib.error
 
 from flask import Flask, request, jsonify
 
-
 app = Flask(__name__)
 
 
@@ -22,21 +21,82 @@ GRAPH_API_VERSION = "v26.0"
 
 
 # =========================================================
+# FUNÇÃO PARA CHAMAR A GRAPH API
+# =========================================================
+
+def graph_request(path, method="GET", payload=None):
+
+    if not WHATSAPP_TOKEN:
+        raise RuntimeError("WHATSAPP_TOKEN nao configurado")
+
+    url = (
+        f"https://graph.facebook.com/"
+        f"{GRAPH_API_VERSION}/{path}"
+    )
+
+    data = None
+
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+
+    request_api = urllib.request.Request(
+        url=url,
+        data=data,
+        headers={
+            "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+            "Content-Type": "application/json"
+        },
+        method=method
+    )
+
+    try:
+
+        with urllib.request.urlopen(
+            request_api,
+            timeout=20
+        ) as response:
+
+            body = response.read().decode("utf-8")
+
+            if not body:
+                return {}
+
+            return json.loads(body)
+
+    except urllib.error.HTTPError as error:
+
+        body = error.read().decode(
+            "utf-8",
+            errors="replace"
+        )
+
+        try:
+            details = json.loads(body)
+        except Exception:
+            details = {"message": body}
+
+        raise RuntimeError(
+            json.dumps(details, ensure_ascii=False)
+        )
+
+
+# =========================================================
 # PÁGINA INICIAL
 # =========================================================
 
 @app.route("/", methods=["GET"])
 def home():
+
     return "Foto Express Webhook online", 200
 
 
 # =========================================================
-# STATUS DO SERVIDOR
-# Não mostra tokens nem IDs.
+# STATUS
 # =========================================================
 
 @app.route("/status", methods=["GET"])
 def status():
+
     return jsonify({
         "online": True,
         "verify_token_configurado": bool(VERIFY_TOKEN),
@@ -52,6 +112,7 @@ def status():
 
 @app.route("/privacy", methods=["GET"])
 def privacy():
+
     return """
     <!DOCTYPE html>
     <html lang="pt-BR">
@@ -136,10 +197,9 @@ def privacy():
         <h2>6. Exclusão de dados</h2>
 
         <p>
-            O cliente pode solicitar a exclusão de seus
-            dados entrando em contato com a Foto Express
-            através do canal oficial de atendimento no
-            WhatsApp.
+            O cliente pode solicitar a exclusão de seus dados
+            entrando em contato com a Foto Express através
+            do canal oficial de atendimento no WhatsApp.
         </p>
 
         <h2>7. Contato</h2>
@@ -162,6 +222,7 @@ def privacy():
 
 @app.route("/data-deletion", methods=["GET"])
 def data_deletion():
+
     return """
     <!DOCTYPE html>
     <html lang="pt-BR">
@@ -209,65 +270,7 @@ def data_deletion():
 
 
 # =========================================================
-# FUNÇÃO AUXILIAR PARA GRAPH API
-# =========================================================
-
-def graph_request(path, method="GET"):
-
-    if not WHATSAPP_TOKEN:
-        raise RuntimeError(
-            "WHATSAPP_TOKEN nao configurado no Render"
-        )
-
-    url = (
-        f"https://graph.facebook.com/"
-        f"{GRAPH_API_VERSION}/{path}"
-    )
-
-    req = urllib.request.Request(
-        url=url,
-        headers={
-            "Authorization": f"Bearer {WHATSAPP_TOKEN}",
-            "Content-Type": "application/json"
-        },
-        method=method
-    )
-
-    try:
-
-        with urllib.request.urlopen(
-            req,
-            timeout=20
-        ) as response:
-
-            body = response.read().decode("utf-8")
-
-            if not body:
-                return {}
-
-            return json.loads(body)
-
-    except urllib.error.HTTPError as error:
-
-        body = error.read().decode(
-            "utf-8",
-            errors="replace"
-        )
-
-        try:
-            details = json.loads(body)
-        except Exception:
-            details = {
-                "message": body
-            }
-
-        raise RuntimeError(
-            json.dumps(details, ensure_ascii=False)
-        )
-
-
-# =========================================================
-# VERIFICAR ASSINATURA DA WABA
+# CONSULTAR ASSINATURA DA WABA
 # =========================================================
 
 @app.route("/check-subscription", methods=["GET"])
@@ -276,19 +279,20 @@ def check_subscription():
     if not WABA_ID:
         return jsonify({
             "ok": False,
-            "error": "WABA_ID nao configurado no Render"
+            "error": "WABA_ID nao configurado"
         }), 500
 
     if not WHATSAPP_TOKEN:
         return jsonify({
             "ok": False,
-            "error": "WHATSAPP_TOKEN nao configurado no Render"
+            "error": "WHATSAPP_TOKEN nao configurado"
         }), 500
 
     try:
 
         result = graph_request(
-            f"{WABA_ID}/subscribed_apps"
+            f"{WABA_ID}/subscribed_apps",
+            method="GET"
         )
 
         return jsonify({
@@ -303,20 +307,29 @@ def check_subscription():
             "error": str(error)
         }), 500
 
+
 # =========================================================
-# ASSINAR O APP NA WABA - USO TEMPORARIO
+# ASSINAR O APP NA WABA
+# ROTA TEMPORÁRIA DE CONFIGURAÇÃO
 # =========================================================
 
 @app.route("/subscribe-waba", methods=["GET"])
 def subscribe_waba():
 
-    if not WABA_ID or not WHATSAPP_TOKEN:
+    if not WABA_ID:
         return jsonify({
             "ok": False,
-            "error": "WABA_ID ou WHATSAPP_TOKEN ausente"
+            "error": "WABA_ID nao configurado"
+        }), 500
+
+    if not WHATSAPP_TOKEN:
+        return jsonify({
+            "ok": False,
+            "error": "WHATSAPP_TOKEN nao configurado"
         }), 500
 
     try:
+
         result = graph_request(
             f"{WABA_ID}/subscribed_apps",
             method="POST"
@@ -328,10 +341,13 @@ def subscribe_waba():
         }), 200
 
     except Exception as error:
+
         return jsonify({
             "ok": False,
             "error": str(error)
         }), 500
+
+
 # =========================================================
 # WEBHOOK - VERIFICAÇÃO DA META
 # =========================================================
@@ -365,7 +381,7 @@ def verify_webhook():
 
 
 # =========================================================
-# WEBHOOK - RECEBER EVENTOS DA META
+# WEBHOOK - RECEBER EVENTOS
 # =========================================================
 
 @app.route("/webhook", methods=["POST"])
@@ -373,9 +389,7 @@ def receive_webhook():
 
     try:
 
-        data = request.get_json(
-            silent=True
-        ) or {}
+        data = request.get_json(silent=True) or {}
 
         print(
             "\n====================================",
@@ -396,53 +410,29 @@ def receive_webhook():
 
         for entry in entries:
 
-            changes = entry.get(
-                "changes",
-                []
-            )
+            changes = entry.get("changes", [])
 
             for change in changes:
 
-                field = change.get(
-                    "field",
-                    ""
-                )
-
-                value = change.get(
-                    "value",
-                    {}
-                )
+                field = change.get("field", "")
+                value = change.get("value", {})
 
                 print(
                     f"Campo: {field}",
                     flush=True
                 )
 
-                # -----------------------------------------
-                # MENSAGENS RECEBIDAS
-                # -----------------------------------------
+                # =========================================
+                # MENSAGENS
+                # =========================================
 
-                messages = value.get(
-                    "messages",
-                    []
-                )
+                messages = value.get("messages", [])
 
                 for message in messages:
 
-                    sender = message.get(
-                        "from",
-                        ""
-                    )
-
-                    message_id = message.get(
-                        "id",
-                        ""
-                    )
-
-                    message_type = message.get(
-                        "type",
-                        ""
-                    )
+                    sender = message.get("from", "")
+                    message_id = message.get("id", "")
+                    message_type = message.get("type", "")
 
                     print(
                         f"Remetente: {sender}",
@@ -528,19 +518,16 @@ def receive_webhook():
                     else:
 
                         print(
-                            "Tipo ainda nao tratado: "
+                            f"Tipo ainda nao tratado: "
                             f"{message_type}",
                             flush=True
                         )
 
-                # -----------------------------------------
+                # =========================================
                 # STATUS DE MENSAGENS
-                # -----------------------------------------
+                # =========================================
 
-                statuses = value.get(
-                    "statuses",
-                    []
-                )
+                statuses = value.get("statuses", [])
 
                 for status_item in statuses:
 
@@ -566,7 +553,7 @@ def receive_webhook():
             flush=True
         )
 
-    # Sempre responder rapidamente à Meta.
+    # Meta precisa receber HTTP 200 rapidamente.
     return "EVENT_RECEIVED", 200
 
 
